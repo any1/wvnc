@@ -9,6 +9,7 @@ set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 find_package (Wayland REQUIRED)
 find_package (WaylandScanner REQUIRED)
 find_package (PkgConfig REQUIRED)
+pkg_search_module (PIXMAN REQUIRED pixman-1)
 pkg_search_module (LIBVNCSERVER REQUIRED libvncserver)
 pkg_search_module (XKBCOMMON REQUIRED xkbcommon)
 
@@ -36,17 +37,24 @@ ecm_add_wayland_client_protocol (
 	BASENAME virtual-keyboard
 )
 
+ecm_add_wayland_client_protocol (
+	WLR_DAMAGE_STREAM_SRC
+	PROTOCOL wlr-protocols/unstable/wlr-damage-stream-unstable-v1.xml
+	BASENAME wlr-damage-stream
+)
+
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ggdb")
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas -Wno-unused")
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 
 include_directories ("${CMAKE_BINARY_DIR}")
 include_directories (${LIBVNCSERVER_INCLUDEDIR})
+include_directories (${PIXMAN_INCLUDE_DIRS})
 include_directories (${XKBCOMMON_INCLUDEDIR})
 
 add_executable (wvnc main.c buffer.c utils.c uinput.c ${VIRTUAL_KEYBOARD_SRC}
-	${WLR_SCREENCOPY_SRC} ${XDG_OUTPUT_SRC})
+	${WLR_SCREENCOPY_SRC} ${XDG_OUTPUT_SRC} ${WLR_DAMAGE_STREAM_SRC})
 target_link_libraries (wvnc rt m ${Wayland_LIBRARIES} ${LIBVNCSERVER_LIBRARIES}
-	${XKBCOMMON_LIBRARIES})
+	${XKBCOMMON_LIBRARIES} ${PIXMAN_LIBRARIES})
 
 install (TARGETS wvnc RUNTIME DESTINATION bin COMPONENT bin)

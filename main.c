@@ -14,12 +14,14 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
+#include <pixman.h>
 
 #include <rfb/rfb.h>
 
 #include "wayland-virtual-keyboard-client-protocol.h"
 #include "wayland-wlr-screencopy-client-protocol.h"
 #include "wayland-xdg-output-client-protocol.h"
+#include "wayland-wlr-damage-stream-client-protocol.h"
 
 #include "wvnc.h"
 #include "buffer.h"
@@ -54,8 +56,11 @@ struct wvnc {
 		struct wl_shm *shm;
 		struct zxdg_output_manager_v1 *output_manager;
 		struct zwlr_screencopy_manager_v1 *screencopy_manager;
+		struct zwlr_screencopy_frame_v1 *current_frame;
 		struct zwp_virtual_keyboard_manager_v1 *keyboard_manager;
 		struct zwp_virtual_keyboard_v1 *keyboard;
+		struct zwlr_damage_stream_manager_v1 *damage_stream_manager;
+		struct zwlr_damage_stream_v1 *damage_stream;
 	} wl;
 
 	struct wvnc_xkb xkb;
@@ -71,6 +76,8 @@ struct wvnc {
 
 	uint32_t logical_width;
 	uint32_t logical_height;
+
+	struct pixman_region32 damage;
 };
 
 
@@ -303,6 +310,8 @@ static void handle_wl_registry_global(void *data, struct wl_registry *registry,
 		wl_list_insert(&wvnc->seats, &seat->link);
 	} else if (IS_PROTOCOL(zwp_virtual_keyboard_manager_v1)) {
 		wvnc->wl.keyboard_manager = BIND(zwp_virtual_keyboard_manager_v1, 1);
+	} else if (IS_PROTOCOL(zwlr_damage_stream_manager_v1)) {
+		wvnc->wl.damage_stream_manager = BIND(zwlr_damage_stream_manager_v1, 1);
 	}
 #undef BIND
 #undef IS_PROTOCOL
@@ -453,7 +462,7 @@ static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 }
 
 
-static void update_framebuffer(struct wvnc *wvnc,
+static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 							   struct wvnc_buffer *old, struct wvnc_buffer *new)
 {
 	assert(new->width == old->width && new->height == old->height &&
@@ -521,6 +530,27 @@ static void update_framebuffer(struct wvnc *wvnc,
 	}
 }
 
+
+static void update_framebuffer_with_damage_stream(struct wvnc *wvnc,
+							   struct wvnc_buffer *old, struct wvnc_buffer *new)
+{
+	assert(new->width == old->width && new->height == old->height &&
+		   new->stride == old->stride);
+
+	if (!pixman_region32_not_empty(&wvnc->damage))
+		return; /* Nothing to do */
+
+	struct pixman_box32 *box = pixman_region32_extents(&wvnc->damage);
+	int box_width = box->x2 - box->x1;
+	int box_height = box->y2 - box->y1;
+
+	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new, box->x1, box->y1,
+			box_width, box_height);
+	rfbMarkRectAsModified(wvnc->rfb.screen_info, box->x1, box->y1, box->x2,
+			box->y2);
+
+	pixman_region32_clear(&wvnc->damage);
+}
 
 static void calculate_logical_size(struct wvnc *wvnc)
 {
@@ -657,6 +687,21 @@ static void init_virtual_keyboard(struct wvnc *wvnc)
 	log_info("Uploaded keymap to the virtual keyboard");
 }
 
+static void handle_damage(void *data, struct zwlr_damage_stream_v1 *stream,
+		uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2)
+{
+	struct wvnc *wvnc = data;
+	struct wvnc_output *output = wvnc->selected_output;
+	struct pixman_region32 *damage = &wvnc->damage;
+
+	pixman_region32_union_rect(damage, damage, x1, y1, x2 - x1, y2 - y1);
+	pixman_region32_intersect_rect(damage, damage, 0, 0, output->width,
+			output->height);
+}
+
+static const struct zwlr_damage_stream_v1_listener damage_listener = {
+	.damage = handle_damage,
+};
 
 static void init_wayland(struct wvnc *wvnc)
 {
@@ -727,6 +772,15 @@ static void init_wayland(struct wvnc *wvnc)
 	if (wvnc->selected_output == NULL) {
 		fail("No output found");
 	}
+
+	pixman_region32_init(&wvnc->damage);
+
+	wvnc->wl.damage_stream = zwlr_damage_stream_manager_v1_subscribe(
+			wvnc->wl.damage_stream_manager,
+			wvnc->selected_output->wl);
+
+	zwlr_damage_stream_v1_add_listener(wvnc->wl.damage_stream,
+			&damage_listener, wvnc);
 }
 
 
@@ -871,8 +925,10 @@ int main(int argc, char *argv[])
 			if (buffer_old == NULL) {
 				// Happens only on the first frame we get
 				update_framebuffer_full(wvnc, buffer_new);
+			} else if (wvnc->wl.damage_stream) {
+				update_framebuffer_with_damage_stream(wvnc, buffer_old, buffer_new);
 			} else {
-				update_framebuffer(wvnc, buffer_old, buffer_new);
+				update_framebuffer_with_damage_check(wvnc, buffer_old, buffer_new);
 			}
 
 			zwlr_screencopy_frame_v1_destroy(frame);
@@ -901,5 +957,6 @@ int main(int argc, char *argv[])
 	}
 
 
+	pixman_region32_fini(&wvnc->damage);
 	free(wvnc);
 }
