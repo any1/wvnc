@@ -544,7 +544,7 @@ static void update_framebuffer_with_damage_stream(struct wvnc *wvnc,
 	int box_width = box->x2 - box->x1;
 	int box_height = box->y2 - box->y1;
 
-	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new, box->x1, box->y1,
+	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new, box->x1, new->height - box->y2,
 			box_width, box_height);
 	rfbMarkRectAsModified(wvnc->rfb.screen_info, box->x1, box->y1, box->x2,
 			box->y2);
