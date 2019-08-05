@@ -774,6 +774,9 @@ static void init_wayland(struct wvnc *wvnc)
 	}
 
 	pixman_region32_init(&wvnc->damage);
+	pixman_region32_union_rect(&wvnc->damage, &wvnc->damage, 0, 0,
+			wvnc->selected_output->width,
+			wvnc->selected_output->height);
 
 	wvnc->wl.damage_stream = zwlr_damage_stream_manager_v1_subscribe(
 			wvnc->wl.damage_stream_manager,
@@ -906,7 +909,9 @@ int main(int argc, char *argv[])
 		// TODO: Should we composite the cursor or not?
 		uint64_t t_now = time_monotonic();
 		uint64_t t_delta = t_now - last_capture;
-		if (t_delta >= capture_period && !capturing) {
+		if (!capturing && !pixman_region32_not_empty(&wvnc->damage)) {
+			last_capture = t_now;
+		} else if (t_delta >= capture_period && !capturing) {
 			buffer_old = buffer_new;
 			wvnc->buffer_i = (wvnc->buffer_i + 1) % ARRAY_SIZE(wvnc->buffers);
 			buffer_new = &wvnc->buffers[wvnc->buffer_i];
