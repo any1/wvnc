@@ -9,6 +9,7 @@ set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 find_package (Wayland REQUIRED)
 find_package (WaylandScanner REQUIRED)
 find_package (PkgConfig REQUIRED)
+pkg_search_module (PIXMAN REQUIRED pixman-1)
 pkg_search_module (LIBVNCSERVER REQUIRED libvncserver)
 pkg_search_module (XKBCOMMON REQUIRED xkbcommon)
 
@@ -42,11 +43,12 @@ set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 
 include_directories ("${CMAKE_BINARY_DIR}")
 include_directories (${LIBVNCSERVER_INCLUDEDIR})
+include_directories (${PIXMAN_INCLUDE_DIRS})
 include_directories (${XKBCOMMON_INCLUDEDIR})
 
-add_executable (wvnc main.c buffer.c utils.c uinput.c ${VIRTUAL_KEYBOARD_SRC}
+add_executable (wvnc main.c buffer.c utils.c uinput.c damage.c ${VIRTUAL_KEYBOARD_SRC}
 	${WLR_SCREENCOPY_SRC} ${XDG_OUTPUT_SRC})
 target_link_libraries (wvnc rt m ${Wayland_LIBRARIES} ${LIBVNCSERVER_LIBRARIES}
-	${XKBCOMMON_LIBRARIES})
+	${XKBCOMMON_LIBRARIES} ${PIXMAN_LIBRARIES})
 
 install (TARGETS wvnc RUNTIME DESTINATION bin COMPONENT bin)
