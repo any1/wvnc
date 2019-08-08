@@ -27,6 +27,7 @@
 #include "buffer.h"
 #include "uinput.h"
 #include "utils.h"
+#include "damage.h"
 
 
 struct wvnc_args {
@@ -461,75 +462,34 @@ static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 	);
 }
 
-
 static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 							   struct wvnc_buffer *old, struct wvnc_buffer *new)
 {
 	assert(new->width == old->width && new->height == old->height &&
 		   new->stride == old->stride);
-	const unsigned int tile_pixels = 32;
-	const unsigned int bitmap_bits = 64;
-	unsigned int tile_count_x = new->width / tile_pixels;
-	if (new->width % bitmap_bits != 0) {
-		tile_count_x++;
-	}
-	unsigned int tile_count_y = new->height / tile_pixels;
-	if (new->height % bitmap_bits != 0) {
-		tile_count_y++;
-	}
-	uint64_t bits[(tile_count_x * tile_count_y) / bitmap_bits + 1];
-	memset(bits, 0, sizeof(bits));
 
-	for (uint32_t y = 0; y < new->height; y++) {
-		for (uint32_t x = 0; x < new->width; x++) {
-			uint32_t offset = y*new->stride + x * 4;  // Assuming 4 bytes per pixel
-			uint32_t src = *(uint32_t *)(new->data + offset);
-			uint32_t tgt = *(uint32_t *)(old->data + offset);
-			if (src != tgt) {
-				unsigned int tile_x = x / tile_pixels;
-				unsigned int tile_y = y / tile_pixels;
-				unsigned int tile_off = tile_y*tile_count_x + tile_x;
-				bits[tile_off / bitmap_bits] |= BIT(tile_off % bitmap_bits);
-			}
-		}
-	}
+	struct pixman_region32 region;
+	pixman_region32_init(&region);
 
-	for (unsigned int tile_y = 0; tile_y < tile_count_y; tile_y++) {
-		for (unsigned int tile_x = 0; tile_x < tile_count_x; tile_x++) {
-			unsigned int tile_off = tile_y*tile_count_x + tile_x;
-			if (!(bits[tile_off / bitmap_bits] & BIT(tile_off % bitmap_bits))) {
-				continue;
-			}
-			// We have a modified tile, copy data over to the VNC
-			// framebufer and mark it as modified
-			uint32_t x = tile_x*tile_pixels;
-			uint32_t y = tile_y*tile_pixels;
-			uint32_t w = min(tile_pixels, new->width - x);
-			uint32_t h = min(tile_pixels, new->height - y);
-			buffer_to_fb(
-				wvnc->rfb.fb, wvnc->selected_output, new,
-				x, y, w, h
-			);
+	struct bitmap* damage = damage_compute(old->data, new->data, new->width, new->height);
+	if (!damage || bitmap_is_empty(damage))
+		goto done;
 
-			uint32_t fb_x_start;
-			uint32_t fb_y_start;
-			buffer_calculate_fb_coords(
-				wvnc->selected_output, x, y, &fb_x_start, &fb_y_start
-			);
-			uint32_t fb_x_end;
-			uint32_t fb_y_end;
-			buffer_calculate_fb_coords(
-				wvnc->selected_output, x + w, y + h, &fb_x_end, &fb_y_end
-			);
+	damage_to_pixman(&region, damage, new->width, new->height);
 
-			rfbMarkRectAsModified(
-				wvnc->rfb.screen_info,
-				fb_x_start, fb_y_start, fb_x_end, fb_y_end
-			);
-		}
-	}
+	struct pixman_box32 *box = pixman_region32_extents(&region);
+	int box_width = box->x2 - box->x1;
+	int box_height = box->y2 - box->y1;
+
+	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new, box->x1, box->y1,
+			box_width, box_height);
+	rfbMarkRectAsModified(wvnc->rfb.screen_info, box->x1, new->height - box->y2, box->x2,
+			new->height - box->y1);
+
+done:
+	pixman_region32_fini(&region);
+	free(damage);
 }
-
 
 static void update_framebuffer_with_damage_stream(struct wvnc *wvnc,
 							   struct wvnc_buffer *old, struct wvnc_buffer *new)
