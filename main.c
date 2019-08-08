@@ -738,12 +738,14 @@ static void init_wayland(struct wvnc *wvnc)
 			wvnc->selected_output->width,
 			wvnc->selected_output->height);
 
-	wvnc->wl.damage_stream = zwlr_damage_stream_manager_v1_subscribe(
-			wvnc->wl.damage_stream_manager,
-			wvnc->selected_output->wl);
+	if (wvnc->wl.damage_stream_manager) {
+		wvnc->wl.damage_stream = zwlr_damage_stream_manager_v1_subscribe(
+				wvnc->wl.damage_stream_manager,
+				wvnc->selected_output->wl);
 
-	zwlr_damage_stream_v1_add_listener(wvnc->wl.damage_stream,
-			&damage_listener, wvnc);
+		zwlr_damage_stream_v1_add_listener(wvnc->wl.damage_stream,
+				&damage_listener, wvnc);
+	}
 }
 
 
