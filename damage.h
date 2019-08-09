@@ -27,20 +27,6 @@
 
 #include "bitmap.h"
 
-static inline void get_row_damage(struct bitmap* dst, const uint32_t *row0,
-		const uint32_t *row1, size_t src_len)
-{
-	for (size_t i = 0; i < src_len; ++i)
-		bitmap_set_cond(dst, i, row0[i] != row1[i]);
-}
-
-static inline void damage_reduce_by_64(struct bitmap *dst, size_t shift,
-				       const struct bitmap *src)
-{
-	for (size_t i = 0; i < src->n_elem; ++i)
-		bitmap_set_cond(dst, i + shift, !!src->data[i]);
-}
-
 struct bitmap *damage_compute(const uint32_t *src0, const uint32_t *src1,
 			      int width, int height);
 

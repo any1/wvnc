@@ -30,52 +30,67 @@
 #include "bitmap.h"
 #include "damage.h"
 
-struct bitmap *damage_compute(const uint32_t *src0, const uint32_t *src1,
-			      int width, int height)
+#define TILE_SIZE 64
+
+/* This function has been optimised for auto-vectorization */
+struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
+							  const uint32_t * __restrict__ src1,
+							  int width, int height)
 {
-	struct bitmap *damage = NULL, *row_damage = NULL;
+	int x_tiles = UDIV_UP(width, TILE_SIZE);
+	int y_tiles = UDIV_UP(height, TILE_SIZE);
 
-	int x_tiles = UDIV_UP(width, 64);
-	int y_tiles = UDIV_UP(height, 64);
-
-	row_damage = bitmap_alloc(width);
-	if (!row_damage)
-		goto failure;
-
-	damage = bitmap_alloc(x_tiles * y_tiles);
+	struct bitmap *damage = bitmap_alloc(x_tiles * y_tiles);
 	if (!damage)
-		goto failure;
+		return NULL;
+
+	int partial_width = (width / TILE_SIZE) * TILE_SIZE;
+	int residual_width = width - partial_width;
 
 	for (int y = 0; y < height; ++y) {
-		bitmap_clear_all(row_damage);
-		get_row_damage(row_damage,
-			       src0 + y * width,
-			       src1 + y * width,
-			       width);
-		damage_reduce_by_64(damage, y / 64 * x_tiles, row_damage);
+		for (int x = 0; x < partial_width; x += TILE_SIZE) {
+			int buffer_index = y * width + x;
+			int tile_index = y / TILE_SIZE * x_tiles + x / TILE_SIZE;
+
+			int is_tile_damaged = 0;
+
+			/* This loop should be auto-vectorized */
+			for (int i = buffer_index; i < buffer_index + TILE_SIZE; ++i) {
+				is_tile_damaged |= src0[i] != src1[i];
+			}
+
+			bitmap_set_cond(damage, tile_index, is_tile_damaged);
+		}
+
+		int buffer_index = y * width + partial_width;
+		int tile_index = y / TILE_SIZE * x_tiles
+			       + partial_width / TILE_SIZE;
+
+		int is_tile_damaged = 0;
+
+		/* This loop should be auto-vectorized */
+		for (int i = buffer_index; i < buffer_index + residual_width; ++i) {
+			is_tile_damaged |= src0[i] != src1[i];
+		}
+
+		bitmap_set_cond(damage, tile_index, is_tile_damaged);
 	}
 
-	free(row_damage);
 	return damage;
-
-failure:
-	free(damage);
-	free(row_damage);
-	return NULL;
 }
 
 void damage_to_pixman(struct pixman_region32* dst, const struct bitmap* src,
-		      int width, int height)
+					  int width, int height)
 {
-	int x_tiles = UDIV_UP(width, 64);
-	int y_tiles = UDIV_UP(height, 64);
+	int x_tiles = UDIV_UP(width, TILE_SIZE);
+	int y_tiles = UDIV_UP(height, TILE_SIZE);
 
 	for (int i = 0; i < x_tiles * y_tiles; ++i)
 		if (bitmap_is_set(src, i)) {
-			int x = (i % x_tiles) * 64;
-			int y = (i / x_tiles) * 64;
+			int x = (i % x_tiles) * TILE_SIZE;
+			int y = (i / x_tiles) * TILE_SIZE;
 
-			pixman_region32_union_rect(dst, dst, x, y, 64, 64);
+			pixman_region32_union_rect(dst, dst, x, y, TILE_SIZE, TILE_SIZE);
 		}
 
 	pixman_region32_intersect_rect(dst, dst, 0, 0, width, height);
