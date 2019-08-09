@@ -86,6 +86,7 @@ struct wvnc {
 	uv_loop_t main_loop;
 	uv_poll_t wayland_poller;
 	uv_poll_t rfb_poller;
+	uv_prepare_t flusher;
 
 	struct wl_list clients;
 	uv_timer_t capture_timer;
@@ -902,8 +903,6 @@ void handle_capture_timeout(uv_timer_t *timer)
 		zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener,
 				buffer);
 
-		wl_display_flush(wvnc->wl.display);
-
 		wvnc->capture_state = WVNC_STATE_CAPTURING;
 		break;
 	case WVNC_STATE_CAPTURING:
@@ -932,7 +931,6 @@ void handle_wayland_event(uv_poll_t *handle, int status, int event)
 {
 	struct wvnc* wvnc = wl_container_of(handle, wvnc, wayland_poller);
 	wl_display_dispatch(wvnc->wl.display);
-	wl_display_flush(wvnc->wl.display);
 }
 
 void handle_rfb_event(uv_poll_t *handle, int status, int event)
@@ -947,6 +945,12 @@ void clean_up_clients(struct wvnc *wvnc)
 
 	wl_list_for_each_safe(client, tmp, &wvnc->clients, link)
 		destroy_client(client);
+}
+
+void prepare_for_poll(uv_prepare_t *handle)
+{
+	struct wvnc* wvnc = wl_container_of(handle, wvnc, flusher);
+	wl_display_flush(wvnc->wl.display);
 }
 
 int main(int argc, char *argv[])
@@ -996,6 +1000,9 @@ int main(int argc, char *argv[])
 	uv_poll_init(&wvnc->main_loop, &wvnc->rfb_poller, listen_fd);
 	uv_poll_start(&wvnc->rfb_poller, UV_READABLE | UV_PRIORITIZED,
 			handle_rfb_event);
+
+	uv_prepare_init(&wvnc->main_loop, &wvnc->flusher);
+	uv_prepare_start(&wvnc->flusher, prepare_for_poll);
 
 	int rc = uv_run(&wvnc->main_loop, UV_RUN_DEFAULT);
 
