@@ -1,4 +1,3 @@
-
 #include <argp.h>
 #include <arpa/inet.h>
 #include <assert.h>
@@ -17,6 +16,7 @@
 #include <pixman.h>
 
 #include <rfb/rfb.h>
+
 #include <uv.h>
 
 #include "wayland-virtual-keyboard-client-protocol.h"
@@ -47,6 +47,7 @@ struct wvnc_xkb {
 enum wvnc_capture_state {
 	WVNC_STATE_IDLE = 0,
 	WVNC_STATE_CAPTURING,
+	WVNC_STATE_UPDATING,
 };
 
 struct wvnc_client;
@@ -87,6 +88,7 @@ struct wvnc {
 	uv_poll_t wayland_poller;
 	uv_poll_t rfb_poller;
 	uv_prepare_t flusher;
+	uv_work_t fb_worker;
 
 	struct wl_list clients;
 	uv_timer_t capture_timer;
@@ -884,6 +886,41 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
+void update_framebuffer(struct wvnc *wvnc, struct wvnc_buffer *buffer,
+			struct wvnc_buffer *old)
+{
+	if (!wvnc->is_first_capture_done) {
+		update_framebuffer_full(wvnc, buffer);
+		wvnc->is_first_capture_done = 1;
+	} else if (wvnc->wl.damage_stream) {
+		update_framebuffer_with_damage_stream(wvnc, old, buffer);
+	} else {
+		update_framebuffer_with_damage_check(wvnc, old, buffer);
+	}
+}
+
+void do_update_fb(uv_work_t *req)
+{
+	struct wvnc* wvnc = wl_container_of(req, wvnc, fb_worker);
+	struct wvnc_buffer *buffer, *old;
+	buffer = &wvnc->buffers[wvnc->buffer_i];
+	old = &wvnc->buffers[!wvnc->buffer_i];
+	update_framebuffer(wvnc, buffer, old);
+}
+
+void after_update_fb(uv_work_t *req, int status)
+{
+	struct wvnc* wvnc = wl_container_of(req, wvnc, fb_worker);
+	wvnc->capture_state = WVNC_STATE_IDLE;
+	rfbProcessEvents(wvnc->rfb.screen_info, 0);
+}
+
+void schedule_framebuffer_update(struct wvnc *wvnc)
+{
+	uv_queue_work(&wvnc->main_loop, &wvnc->fb_worker, do_update_fb,
+		      after_update_fb);
+}
+
 void handle_capture_timeout(uv_timer_t *timer)
 {
 	struct wvnc* wvnc = wl_container_of(timer, wvnc, capture_timer);
@@ -907,22 +944,13 @@ void handle_capture_timeout(uv_timer_t *timer)
 		break;
 	case WVNC_STATE_CAPTURING:
 		buffer = &wvnc->buffers[wvnc->buffer_i];
-		if (!buffer->done)
-			break;
-
-		wvnc->capture_state = WVNC_STATE_IDLE;
-		old = &wvnc->buffers[!wvnc->buffer_i];
-
-		if (!wvnc->is_first_capture_done) {
-			update_framebuffer_full(wvnc, buffer);
-			wvnc->is_first_capture_done = 1;
-		} else if (wvnc->wl.damage_stream) {
-			update_framebuffer_with_damage_stream(wvnc, old, buffer);
-		} else {
-			update_framebuffer_with_damage_check(wvnc, old, buffer);
+		if (buffer->done) {
+			schedule_framebuffer_update(wvnc);
+			wvnc->capture_state = WVNC_STATE_UPDATING;
 		}
-
-		rfbProcessEvents(wvnc->rfb.screen_info, 0);
+		break;
+	case WVNC_STATE_UPDATING:
+		/* Do nothing */
 		break;
 	}
 }
