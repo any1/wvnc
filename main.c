@@ -17,6 +17,7 @@
 #include <pixman.h>
 
 #include <rfb/rfb.h>
+#include <uv.h>
 
 #include "wayland-virtual-keyboard-client-protocol.h"
 #include "wayland-wlr-screencopy-client-protocol.h"
@@ -28,7 +29,6 @@
 #include "utils.h"
 #include "damage.h"
 
-
 struct wvnc_args {
 	const char *output;
 	in_addr_t address;
@@ -37,13 +37,18 @@ struct wvnc_args {
 	bool no_uinput;
 };
 
-
 struct wvnc_xkb {
 	struct xkb_context *ctx;
 	struct xkb_keymap *map;
 	struct xkb_state *state;
 };
 
+enum wvnc_capture_state {
+	WVNC_STATE_IDLE = 0,
+	WVNC_STATE_CAPTURING,
+};
+
+struct wvnc_client;
 
 struct wvnc {
 	struct {
@@ -73,8 +78,23 @@ struct wvnc {
 
 	uint32_t logical_width;
 	uint32_t logical_height;
+
+	uv_loop_t main_loop;
+	uv_poll_t wayland_poller;
+	uv_poll_t rfb_poller;
+
+	struct wl_list clients;
+	uv_timer_t capture_timer;
+	enum wvnc_capture_state capture_state;
+	int is_first_capture_done;
 };
 
+struct wvnc_client {
+	struct wl_list link;
+	struct wvnc* wvnc;
+	rfbClientPtr rfb_client;
+	uv_poll_t handle;
+};
 
 // This is because we can't pass our global pointer into some of the 
 // rfb callbacks. Use minimally.
@@ -323,17 +343,48 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = handle_wl_registry_global_remove,
 };
 
+void destroy_client(struct wvnc_client *client)
+{
+	uv_poll_stop(&client->handle);
+	wl_list_remove(&client->link);
+	free(client);
+}
+
+void handle_client_event(uv_poll_t *handle, int status, int event)
+{
+	struct wvnc_client* client = wl_container_of(handle, client, handle);
+
+	if (event & UV_DISCONNECT)
+		destroy_client(client);
+
+	rfbProcessEvents(client->wvnc->rfb.screen_info, 0);
+}
 
 static enum rfbNewClientAction rfb_new_client_hook(rfbClientPtr cl)
 {
-	cl->clientData = global_wvnc;
+	struct wvnc_client *self = calloc(1, sizeof(*self));
+	if (!self)
+		return RFB_CLIENT_REFUSE;
+
+	self->rfb_client = cl;
+	self->wvnc = global_wvnc;
+	wl_list_insert(&self->wvnc->clients, &self->link);
+
+	uv_poll_init(&self->wvnc->main_loop, &self->handle, cl->sock);
+	uv_poll_start(&self->handle, UV_READABLE | UV_PRIORITIZED |
+		      UV_DISCONNECT, handle_client_event);
+
+	cl->clientData = self;
+
 	return RFB_CLIENT_ACCEPT;
 }
 
 
 static void rfb_ptr_hook(int mask, int screen_x, int screen_y, rfbClientPtr cl)
 {
-	struct wvnc *wvnc = cl->clientData;
+	struct wvnc_client *client = cl->clientData;
+	struct wvnc *wvnc = client->wvnc;
+
 	if (!wvnc->uinput.initialized) {
 		return; // Nothing to do here
 	}
@@ -393,7 +444,9 @@ end:
 
 static void rfb_key_hook(rfbBool down, rfbKeySym keysym, rfbClientPtr cl)
 {
-	struct wvnc *wvnc = cl->clientData;
+	struct wvnc_client *client = cl->clientData;
+	struct wvnc *wvnc = client->wvnc;
+
 	struct wvnc_xkb *xkb = &wvnc->xkb;
 	if (wvnc->wl.keyboard == NULL) {
 		return;
@@ -713,6 +766,7 @@ static void init_rfb(struct wvnc *wvnc)
 	wvnc->rfb.screen_info->newClientHook = rfb_new_client_hook;
 	wvnc->rfb.screen_info->kbdAddEvent = rfb_key_hook;
 	wvnc->rfb.screen_info->ptrAddEvent = rfb_ptr_hook;
+
 	rfbLog = log_info;
 	rfbErr = log_error;
 
@@ -773,6 +827,69 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
+void handle_capture_timeout(uv_timer_t *timer)
+{
+	struct wvnc* wvnc = wl_container_of(timer, wvnc, capture_timer);
+
+	struct zwlr_screencopy_frame_v1 *frame;
+	struct wvnc_buffer *buffer, *old;
+
+	switch (wvnc->capture_state) {
+	case WVNC_STATE_IDLE:
+		wvnc->buffer_i ^= 1;
+		buffer = &wvnc->buffers[wvnc->buffer_i];
+
+		frame = zwlr_screencopy_manager_v1_capture_output(
+				wvnc->wl.screencopy_manager, 0,
+				wvnc->selected_output->wl);
+
+		zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener,
+				buffer);
+
+		wl_display_flush(wvnc->wl.display);
+
+		wvnc->capture_state = WVNC_STATE_CAPTURING;
+		break;
+	case WVNC_STATE_CAPTURING:
+		buffer = &wvnc->buffers[wvnc->buffer_i];
+		if (!buffer->done)
+			break;
+
+		wvnc->capture_state = WVNC_STATE_IDLE;
+		old = &wvnc->buffers[!wvnc->buffer_i];
+
+		if (!wvnc->is_first_capture_done) {
+			update_framebuffer_full(wvnc, buffer);
+			wvnc->is_first_capture_done = 1;
+		} else {
+			update_framebuffer_with_damage_check(wvnc, old, buffer);
+		}
+
+		rfbProcessEvents(wvnc->rfb.screen_info, 0);
+		break;
+	}
+}
+
+void handle_wayland_event(uv_poll_t *handle, int status, int event)
+{
+	struct wvnc* wvnc = wl_container_of(handle, wvnc, wayland_poller);
+	wl_display_dispatch(wvnc->wl.display);
+	wl_display_flush(wvnc->wl.display);
+}
+
+void handle_rfb_event(uv_poll_t *handle, int status, int event)
+{
+	struct wvnc* wvnc = wl_container_of(handle, wvnc, rfb_poller);
+	rfbProcessEvents(wvnc->rfb.screen_info, 0);
+}
+
+void clean_up_clients(struct wvnc *wvnc)
+{
+	struct wvnc_client *client, *tmp;
+
+	wl_list_for_each_safe(client, tmp, &wvnc->clients, link)
+		destroy_client(client);
+}
 
 int main(int argc, char *argv[])
 {
@@ -800,68 +917,35 @@ int main(int argc, char *argv[])
 			 wvnc->selected_output->name,
 			 wvnc->selected_output->width, wvnc->selected_output->height);
 
+	wl_list_init(&wvnc->clients);
+
 	// Initialize RFB
 	init_rfb(wvnc);
 
-	// Start capture
-	uint64_t last_capture = 0; // Start of last capture
-	const uint64_t capture_period = wvnc->args.period * 1000;
-	struct zwlr_screencopy_frame_v1 *frame = NULL;
-	bool capturing = false;
-	struct wvnc_buffer *buffer_old = NULL;
-	struct wvnc_buffer *buffer_new = NULL;
-	while (true) {
-		// TODO: Should we composite the cursor or not?
-		uint64_t t_now = time_monotonic();
-		uint64_t t_delta = t_now - last_capture;
-		if (t_delta >= capture_period && !capturing) {
-			buffer_old = buffer_new;
-			wvnc->buffer_i = (wvnc->buffer_i + 1) % ARRAY_SIZE(wvnc->buffers);
-			buffer_new = &wvnc->buffers[wvnc->buffer_i];
-			last_capture = t_now;
-			capturing = true;
-			buffer_new->done = false;
-			frame = zwlr_screencopy_manager_v1_capture_output(
-				wvnc->wl.screencopy_manager, 0, wvnc->selected_output->wl
-			);
-			zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener, buffer_new);
-			wl_display_dispatch(wvnc->wl.display);
-			wl_display_flush(wvnc->wl.display);
-		} else if (capturing && buffer_new->done) {
-			capturing = false;
+	uv_loop_init(&wvnc->main_loop);
 
-			if (buffer_old == NULL) {
-				// Happens only on the first frame we get
-				update_framebuffer_full(wvnc, buffer_new);
-			} else {
-				update_framebuffer_with_damage_check(wvnc, buffer_old, buffer_new);
-			}
+	uv_timer_init(&wvnc->main_loop, &wvnc->capture_timer);
+	uv_timer_start(&wvnc->capture_timer, handle_capture_timeout,
+		       wvnc->args.period, wvnc->args.period);
 
-			zwlr_screencopy_frame_v1_destroy(frame);
-		}
+	uv_poll_init(&wvnc->main_loop, &wvnc->wayland_poller,
+			wl_display_get_fd(wvnc->wl.display));
+	uv_poll_start(&wvnc->wayland_poller, UV_READABLE | UV_PRIORITIZED,
+			handle_wayland_event);
 
-		// TODO: Maybe use epoll or something
-		struct timeval timeout = {
-			.tv_sec = 0,
-			.tv_usec = t_delta < capture_period ? (capture_period - t_delta) : 0
-		};
-		int wl_fd = wl_display_get_fd(wvnc->wl.display);
-		fd_set fds;
-		memcpy(&fds, &wvnc->rfb.screen_info->allFds, sizeof(fd_set));
-		FD_SET(wl_fd, &fds);
-		int ret = select(wvnc->rfb.screen_info->maxFd + 2, &fds, NULL, NULL, &timeout);
-		if (ret != 0) {
-			bool is_wl = FD_ISSET(wl_fd, &fds);
-			if (is_wl) {
-				wl_display_dispatch(wvnc->wl.display);
-			}
-			// No way of checking directly
-			if ((is_wl && ret > 1) || ret == 1) {
-				rfbProcessEvents(wvnc->rfb.screen_info, 0);
-			}
-		}
-	}
+	int listen_fd = wvnc->rfb.screen_info->listenSock;
+	assert(listen_fd >= 0);
+	uv_poll_init(&wvnc->main_loop, &wvnc->rfb_poller, listen_fd);
+	uv_poll_start(&wvnc->rfb_poller, UV_READABLE | UV_PRIORITIZED,
+			handle_rfb_event);
 
+	int rc = uv_run(&wvnc->main_loop, UV_RUN_DEFAULT);
+
+	clean_up_clients(wvnc);
+
+	uv_loop_close(&wvnc->main_loop);
 
 	free(wvnc);
+
+	return rc;
 }
