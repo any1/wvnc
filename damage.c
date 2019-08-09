@@ -52,6 +52,9 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 			int buffer_index = y * width + x;
 			int tile_index = y / TILE_SIZE * x_tiles + x / TILE_SIZE;
 
+			if (bitmap_is_set(damage, tile_index))
+				continue;
+
 			int is_tile_damaged = 0;
 
 			/* This loop should be auto-vectorized */
@@ -65,6 +68,9 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 		int buffer_index = y * width + partial_width;
 		int tile_index = y / TILE_SIZE * x_tiles
 			       + partial_width / TILE_SIZE;
+
+		if (bitmap_is_set(damage, tile_index))
+			continue;
 
 		int is_tile_damaged = 0;
 
