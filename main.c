@@ -926,7 +926,10 @@ void handle_capture_timeout(uv_timer_t *timer)
 	struct wvnc* wvnc = wl_container_of(timer, wvnc, capture_timer);
 
 	struct zwlr_screencopy_frame_v1 *frame;
-	struct wvnc_buffer *buffer, *old;
+	struct wvnc_buffer *buffer;
+
+	if (wl_list_empty(&wvnc->clients))
+		return;
 
 	switch (wvnc->capture_state) {
 	case WVNC_STATE_IDLE:
