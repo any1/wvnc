@@ -2,7 +2,10 @@ cmake_minimum_required (VERSION 3.9)
 project (wvnc)
 
 set (CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set (CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+
+if (${CMAKE_BUILD_TYPE} MATCHES "Release")
+	set (CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif ()
 
 find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
@@ -38,9 +41,9 @@ ecm_add_wayland_client_protocol (
 	BASENAME virtual-keyboard
 )
 
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ggdb")
+set (CMAKE_C_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb -O0")
+set (CMAKE_C_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas -Wno-unused")
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 
 include_directories ("${CMAKE_BINARY_DIR}")
 include_directories (${LIBVNCSERVER_INCLUDE_DIRS})
