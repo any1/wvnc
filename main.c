@@ -94,10 +94,10 @@ struct wvnc {
 };
 
 struct wvnc_client {
+	uv_poll_t handle; /* Must be first element */
 	struct wl_list link;
 	struct wvnc* wvnc;
 	rfbClientPtr rfb_client;
-	uv_poll_t handle;
 };
 
 // This is because we can't pass our global pointer into some of the 
@@ -347,19 +347,15 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = handle_wl_registry_global_remove,
 };
 
-void destroy_client(struct wvnc_client *client)
-{
-	uv_poll_stop(&client->handle);
-	wl_list_remove(&client->link);
-	free(client);
-}
-
 void handle_client_event(uv_poll_t *handle, int status, int event)
 {
 	struct wvnc_client* client = wl_container_of(handle, client, handle);
 
-	if (event & UV_DISCONNECT)
-		destroy_client(client);
+	if (event & UV_DISCONNECT) {
+		uv_poll_stop(&client->handle);
+		wl_list_remove(&client->link);
+		uv_close((uv_handle_t*)&client->handle, (uv_close_cb)free);
+	}
 
 	rfbProcessEvents(client->wvnc->rfb.screen_info, 0);
 }
@@ -918,8 +914,11 @@ void clean_up_clients(struct wvnc *wvnc)
 {
 	struct wvnc_client *client, *tmp;
 
-	wl_list_for_each_safe(client, tmp, &wvnc->clients, link)
-		destroy_client(client);
+	wl_list_for_each_safe(client, tmp, &wvnc->clients, link) {
+		uv_poll_stop(&client->handle);
+		wl_list_remove(&client->link);
+		free(client);
+	}
 }
 
 void clean_up_outputs(struct wvnc *wvnc)
@@ -951,10 +950,17 @@ void prepare_for_poll(uv_prepare_t *handle)
 	wl_display_flush(wvnc->wl.display);
 }
 
+void on_uv_walk(uv_handle_t* handle, void* arg)
+{
+	uv_unref(handle);
+	uv_close(handle, NULL);
+}
+
 void handle_signal(uv_signal_t *handle, int signo)
 {
 	struct wvnc* wvnc = wl_container_of(handle, wvnc, signal_handler);
-	uv_stop(&wvnc->main_loop);
+
+	uv_walk(handle->loop, on_uv_walk, NULL);
 }
 
 int main(int argc, char *argv[])
