@@ -43,9 +43,9 @@ set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-un
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 
 include_directories ("${CMAKE_BINARY_DIR}")
-include_directories (${LIBVNCSERVER_INCLUDEDIR})
+include_directories (${LIBVNCSERVER_INCLUDE_DIRS})
 include_directories (${PIXMAN_INCLUDE_DIRS})
-include_directories (${XKBCOMMON_INCLUDEDIR})
+include_directories (${XKBCOMMON_INCLUDE_DIRS})
 include_directories (${LIBUV_INCLUDE_DIRS})
 
 add_executable (wvnc main.c buffer.c utils.c uinput.c damage.c ${VIRTUAL_KEYBOARD_SRC}
