@@ -58,7 +58,6 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 			int is_tile_damaged = 0;
 
 			/* This loop should be auto-vectorized */
-#pragma GCC unroll 64
 			for (int i = buffer_index; i < buffer_index + TILE_SIZE; ++i) {
 				is_tile_damaged |= src0[i] != src1[i];
 			}
@@ -76,7 +75,6 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 		int is_tile_damaged = 0;
 
 		/* This loop should be auto-vectorized */
-#pragma GCC unroll 64
 		for (int i = buffer_index; i < buffer_index + residual_width; ++i) {
 			is_tile_damaged |= src0[i] != src1[i];
 		}
