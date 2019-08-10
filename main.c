@@ -210,11 +210,13 @@ static void handle_frame_ready(void *data,
 {
 	struct wvnc_buffer *buffer = data;
 	buffer->done = true;
+	zwlr_screencopy_frame_v1_destroy(frame);
 }
 
 static void handle_frame_failed(void *data,
 								struct zwlr_screencopy_frame_v1 *frame)
 {
+	zwlr_screencopy_frame_v1_destroy(frame);
 	fail("Failed to capture output");
 }
 
@@ -915,7 +917,8 @@ void clean_up_clients(struct wvnc *wvnc)
 	struct wvnc_client *client, *tmp;
 
 	wl_list_for_each_safe(client, tmp, &wvnc->clients, link) {
-		uv_poll_stop(&client->handle);
+		if (!uv_is_closing((uv_handle_t*)&client->handle))
+			uv_poll_stop(&client->handle);
 		wl_list_remove(&client->link);
 		free(client);
 	}
@@ -926,6 +929,7 @@ void clean_up_outputs(struct wvnc *wvnc)
 	struct wvnc_output *output, *tmp;
 
 	wl_list_for_each_safe(output, tmp, &wvnc->outputs, link) {
+		wl_output_destroy(output->wl);
 		wl_list_remove(&output->link);
 		zxdg_output_v1_destroy(output->xdg);
 		free(output->name);
@@ -938,6 +942,7 @@ void clean_up_seats(struct wvnc *wvnc)
 	struct wvnc_seat *seat, *tmp;
 
 	wl_list_for_each_safe(seat, tmp, &wvnc->seats, link) {
+		wl_seat_destroy(seat->wl);
 		wl_list_remove(&seat->link);
 		free(seat->name);
 		free(seat);
@@ -1027,6 +1032,9 @@ int main(int argc, char *argv[])
 	xkb_keymap_unref(wvnc->xkb.map);
 	xkb_state_unref(wvnc->xkb.state);
 
+	if (wvnc->buffers[1].wl) wl_buffer_destroy(wvnc->buffers[1].wl);
+	if (wvnc->buffers[0].wl) wl_buffer_destroy(wvnc->buffers[0].wl);
+	wl_shm_destroy(wvnc->wl.shm);
 	clean_up_outputs(wvnc);
 	wl_keyboard_destroy(wvnc->wl.wl_keyboard);
 	clean_up_seats(wvnc);
