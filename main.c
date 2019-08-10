@@ -63,6 +63,7 @@ struct wvnc {
 		struct zwlr_screencopy_manager_v1 *screencopy_manager;
 		struct zwp_virtual_keyboard_manager_v1 *keyboard_manager;
 		struct zwp_virtual_keyboard_v1 *keyboard;
+		struct wl_keyboard *wl_keyboard;
 	} wl;
 
 	struct wvnc_xkb xkb;
@@ -84,6 +85,7 @@ struct wvnc {
 	uv_poll_t rfb_poller;
 	uv_prepare_t flusher;
 	uv_work_t fb_worker;
+	uv_signal_t signal_handler;
 
 	struct wl_list clients;
 	uv_timer_t capture_timer;
@@ -630,9 +632,9 @@ static void init_virtual_keyboard(struct wvnc *wvnc)
 	// We need to get a keymap _somewhere_. This could be either from our
 	// selected seat (preferred) or from libxkb (worse).
 	if (wvnc->selected_seat->capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
-		struct wl_keyboard *wl_keyboard =
-			wl_seat_get_keyboard(wvnc->selected_seat->wl);
-		wl_keyboard_add_listener(wl_keyboard, &wl_keyboard_listener, wvnc);
+		wvnc->wl.wl_keyboard = wl_seat_get_keyboard(wvnc->selected_seat->wl);
+		wl_keyboard_add_listener(wvnc->wl.wl_keyboard, &wl_keyboard_listener,
+								 wvnc);
 		wl_display_dispatch(wvnc->wl.display);
 		wl_display_roundtrip(wvnc->wl.display);
 	}
@@ -668,6 +670,7 @@ static void init_virtual_keyboard(struct wvnc *wvnc)
 	if (ret != length) {
 		fail("Failed to send keymap to the virtual keyboard");
 	}
+	free(str);
 
 	zwp_virtual_keyboard_v1_keymap(wvnc->wl.keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, length);
 	wl_display_dispatch_pending(wvnc->wl.display);
@@ -919,10 +922,39 @@ void clean_up_clients(struct wvnc *wvnc)
 		destroy_client(client);
 }
 
+void clean_up_outputs(struct wvnc *wvnc)
+{
+	struct wvnc_output *output, *tmp;
+
+	wl_list_for_each_safe(output, tmp, &wvnc->outputs, link) {
+		wl_list_remove(&output->link);
+		zxdg_output_v1_destroy(output->xdg);
+		free(output->name);
+		free(output);
+	}
+}
+
+void clean_up_seats(struct wvnc *wvnc)
+{
+	struct wvnc_seat *seat, *tmp;
+
+	wl_list_for_each_safe(seat, tmp, &wvnc->seats, link) {
+		wl_list_remove(&seat->link);
+		free(seat->name);
+		free(seat);
+	}
+}
+
 void prepare_for_poll(uv_prepare_t *handle)
 {
 	struct wvnc* wvnc = wl_container_of(handle, wvnc, flusher);
 	wl_display_flush(wvnc->wl.display);
+}
+
+void handle_signal(uv_signal_t *handle, int signo)
+{
+	struct wvnc* wvnc = wl_container_of(handle, wvnc, signal_handler);
+	uv_stop(&wvnc->main_loop);
 }
 
 int main(int argc, char *argv[])
@@ -976,12 +1008,30 @@ int main(int argc, char *argv[])
 	uv_prepare_init(&wvnc->main_loop, &wvnc->flusher);
 	uv_prepare_start(&wvnc->flusher, prepare_for_poll);
 
+	uv_signal_init(&wvnc->main_loop, &wvnc->signal_handler);
+	uv_signal_start(&wvnc->signal_handler, handle_signal, SIGINT);
+
 	int rc = uv_run(&wvnc->main_loop, UV_RUN_DEFAULT);
 
 	clean_up_clients(wvnc);
 
 	uv_loop_close(&wvnc->main_loop);
 
+	xkb_context_unref(wvnc->xkb.ctx);
+	xkb_keymap_unref(wvnc->xkb.map);
+	xkb_state_unref(wvnc->xkb.state);
+
+	clean_up_outputs(wvnc);
+	wl_keyboard_destroy(wvnc->wl.wl_keyboard);
+	clean_up_seats(wvnc);
+	zxdg_output_manager_v1_destroy(wvnc->wl.output_manager);
+	zwlr_screencopy_manager_v1_destroy(wvnc->wl.screencopy_manager);
+	zwp_virtual_keyboard_manager_v1_destroy(wvnc->wl.keyboard_manager);
+	zwp_virtual_keyboard_v1_destroy(wvnc->wl.keyboard);
+	wl_registry_destroy(wvnc->wl.registry);
+	wl_display_disconnect(wvnc->wl.display);
+	free(wvnc->rfb.fb);
+	rfbScreenCleanup(wvnc->rfb.screen_info);
 	free(wvnc);
 
 	return rc;

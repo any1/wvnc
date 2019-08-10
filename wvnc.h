@@ -49,13 +49,13 @@ struct wvnc_output {
 	uint32_t height;
 	enum wl_output_transform transform;
 
-	const char *name;
+	char *name;
 };
 
 
 struct wvnc_seat {
 	struct wl_seat *wl;
-	const char *name;
+	char *name;
 	uint32_t capabilities;
 
 	struct wl_list link;
