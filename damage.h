@@ -24,11 +24,13 @@
 
 #include <stdint.h>
 #include <unistd.h>
+#include <pixman.h>
 
 #include "bitmap.h"
 
 struct bitmap *damage_compute(const uint32_t *src0, const uint32_t *src1,
-			      int width, int height);
+							  int width, int height,
+							  const struct pixman_box32 *mask);
 
 void damage_to_pixman(struct pixman_region32* dst, const struct bitmap* src,
-		      int width, int height);
+					  int width, int height);

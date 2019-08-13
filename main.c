@@ -187,7 +187,7 @@ static void handle_frame_buffer(void *data,
 	if (buffer->wl == NULL) {
 		initialize_shm_buffer(buffer, format, width, height, stride);
 	}
-	zwlr_screencopy_frame_v1_copy(frame, buffer->wl);
+	zwlr_screencopy_frame_v1_copy_with_damage(frame, buffer->wl);
 }
 
 
@@ -202,6 +202,20 @@ static void handle_frame_flags(void *data,
 	}
 }
 
+static void handle_frame_damage(void *data,
+								struct zwlr_screencopy_frame_v1 *frame,
+								uint32_t x, uint32_t y, uint32_t width,
+								uint32_t height)
+{
+	struct wvnc_buffer *buffer = data;
+
+	pixman_region32_clear(&buffer->damage);
+	pixman_region32_union_rect(&buffer->damage, &buffer->damage, x, y,
+							   width, height);
+	pixman_region32_intersect_rect(&buffer->damage, &buffer->damage, 0, 0,
+								   buffer->width, buffer->height);
+
+}
 
 static void handle_frame_ready(void *data,
 							   struct zwlr_screencopy_frame_v1 *frame,
@@ -225,6 +239,7 @@ static const struct zwlr_screencopy_frame_v1_listener frame_listener = {
 	.buffer = handle_frame_buffer,
 	.flags = handle_frame_flags,
 	.ready = handle_frame_ready,
+	.damage = handle_frame_damage,
 	.failed = handle_frame_failed
 };
 
@@ -518,7 +533,23 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 	struct pixman_region32 region;
 	pixman_region32_init(&region);
 
-	struct bitmap* damage = damage_compute(old->data, new->data, new->width, new->height);
+	struct pixman_region32 hint;
+	pixman_region32_init(&hint);
+
+	pixman_region32_union(&hint, &hint, &new->damage);
+	pixman_region32_union(&hint, &hint, &old->damage);
+	pixman_region32_intersect_rect(&hint, &hint, 0, 0, new->width, new->height);
+
+	struct pixman_box32 *ext = pixman_region32_extents(&hint);
+
+	struct pixman_box32 mask;
+	mask.x1 = ext->x1;
+	mask.x2 = ext->x2;
+	mask.y1 = new->height - ext->y2;
+	mask.y2 = new->height - ext->y1;
+
+	struct bitmap* damage = damage_compute(old->data, new->data, new->width,
+										   new->height, &mask);
 	if (!damage || bitmap_is_empty(damage))
 		goto done;
 
@@ -877,6 +908,7 @@ void handle_capture_timeout(uv_timer_t *timer)
 	case WVNC_STATE_IDLE:
 		wvnc->buffer_i ^= 1;
 		buffer = &wvnc->buffers[wvnc->buffer_i];
+		buffer->done = false;
 
 		frame = zwlr_screencopy_manager_v1_capture_output(
 				wvnc->wl.screencopy_manager, 0,
@@ -989,6 +1021,8 @@ int main(int argc, char *argv[])
 		}
 	}
 	init_wayland(wvnc);
+	pixman_region32_init(&wvnc->buffers[0].damage);
+	pixman_region32_init(&wvnc->buffers[1].damage);
 	// TODO: Handle size and transformations
 	log_info("Starting on output %s with resolution %dx%d",
 			 wvnc->selected_output->name,
@@ -1032,6 +1066,8 @@ int main(int argc, char *argv[])
 	xkb_keymap_unref(wvnc->xkb.map);
 	xkb_state_unref(wvnc->xkb.state);
 
+	pixman_region32_fini(&wvnc->buffers[1].damage);
+	pixman_region32_fini(&wvnc->buffers[0].damage);
 	if (wvnc->buffers[1].wl) wl_buffer_destroy(wvnc->buffers[1].wl);
 	if (wvnc->buffers[0].wl) wl_buffer_destroy(wvnc->buffers[0].wl);
 	wl_shm_destroy(wvnc->wl.shm);

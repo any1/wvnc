@@ -26,6 +26,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <pixman.h>
+#include <assert.h>
 
 #include "bitmap.h"
 #include "damage.h"
@@ -35,7 +36,8 @@
 /* This function has been optimised for auto-vectorization */
 struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 							  const uint32_t * __restrict__ src1,
-							  int width, int height)
+							  int width, int height,
+							  const struct pixman_box32* area)
 {
 	int x_tiles = UDIV_UP(width, TILE_SIZE);
 	int y_tiles = UDIV_UP(height, TILE_SIZE);
@@ -44,11 +46,22 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 	if (!damage)
 		return NULL;
 
-	int partial_width = (width / TILE_SIZE) * TILE_SIZE;
-	int residual_width = width - partial_width;
+	int x_start = (area->x1 / TILE_SIZE) * TILE_SIZE;
+	int x_stop = area->x2;
+	int y_start = area->y1;
+	int y_stop = area->y2;
+	int area_width = x_stop - x_start;
 
-	for (int y = 0; y < height; ++y) {
-		for (int x = 0; x < partial_width; x += TILE_SIZE) {
+	assert(y_stop <= height);
+	assert(y_start <= y_stop);
+	assert(x_stop <= width);
+	assert(x_start <= x_stop);
+
+	int partial_width = (area_width / TILE_SIZE) * TILE_SIZE;
+	int residual_width = area_width - partial_width;
+
+	for (int y = y_start; y < y_stop; ++y) {
+		for (int x = x_start; x < x_start + partial_width; x += TILE_SIZE) {
 			int buffer_index = y * width + x;
 			int tile_index = y / TILE_SIZE * x_tiles + x / TILE_SIZE;
 
@@ -65,9 +78,9 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 			bitmap_set_cond(damage, tile_index, is_tile_damaged);
 		}
 
-		int buffer_index = y * width + partial_width;
+		int buffer_index = y * width + x_start + partial_width;
 		int tile_index = y / TILE_SIZE * x_tiles
-			       + partial_width / TILE_SIZE;
+			       + (x_start + partial_width) / TILE_SIZE;
 
 		if (bitmap_is_set(damage, tile_index))
 			continue;

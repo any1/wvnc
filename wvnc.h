@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <wayland-client.h>
+#include <pixman.h>
 
 #include "uinput.h"
 
@@ -33,6 +34,8 @@ struct wvnc_buffer {
 	size_t size;
 	enum wl_shm_format format;
 	bool y_invert;
+
+	pixman_region32_t damage;
 
 	bool done;
 };
