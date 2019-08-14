@@ -877,6 +877,7 @@ void handle_capture_timeout(uv_timer_t *timer)
 	case WVNC_STATE_IDLE:
 		wvnc->buffer_i ^= 1;
 		buffer = &wvnc->buffers[wvnc->buffer_i];
+		buffer->done = false;
 
 		frame = zwlr_screencopy_manager_v1_capture_output(
 				wvnc->wl.screencopy_manager, 0,
