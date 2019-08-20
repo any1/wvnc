@@ -47,7 +47,7 @@ static inline struct bitmap *bitmap_alloc(size_t bitlen)
 	return self;
 }
 
-static void bitmap_clear_all(struct bitmap *self)
+static inline void bitmap_clear_all(struct bitmap *self)
 {
 	for (size_t i = 0; i < self->n_elem; ++i)
 		self->data[i] = 0;
