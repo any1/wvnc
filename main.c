@@ -18,9 +18,9 @@
 #include <rfb/rfb.h>
 #include <uv.h>
 
-#include "wayland-virtual-keyboard-client-protocol.h"
-#include "wayland-wlr-screencopy-client-protocol.h"
-#include "wayland-xdg-output-client-protocol.h"
+#include "wlr-virtual-keyboard-unstable-v1-client-protocol.h"
+#include "wlr-screencopy-unstable-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-client-protocol.h"
 
 #include "wvnc.h"
 #include "buffer.h"
