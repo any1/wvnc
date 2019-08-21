@@ -27,8 +27,8 @@ wayland_scanner_client = generator(
 
 client_protocols = [
 	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
-	['wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml'],
-	['wlr-virtual-keyboard-unstable-v1.xml'],
+	['protocols/wlr-screencopy-unstable-v1.xml'],
+	['protocols/wlr-virtual-keyboard-unstable-v1.xml'],
 ]
 
 client_protos_src = []
