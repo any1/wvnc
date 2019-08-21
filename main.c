@@ -352,14 +352,17 @@ static const struct wl_registry_listener registry_listener = {
 void handle_client_event(uv_poll_t *handle, int status, int event)
 {
 	struct wvnc_client* client = wl_container_of(handle, client, handle);
-
-	if (event & UV_DISCONNECT) {
-		uv_poll_stop(&client->handle);
-		wl_list_remove(&client->link);
-		uv_close((uv_handle_t*)&client->handle, (uv_close_cb)free);
-	}
-
 	rfbProcessEvents(client->wvnc->rfb.screen_info, 0);
+}
+
+static void rfb_client_gone_hook(rfbClientPtr cl)
+{
+	struct wvnc_client *client = cl->clientData;
+	assert(client);
+
+	uv_poll_stop(&client->handle);
+	wl_list_remove(&client->link);
+	uv_close((uv_handle_t*)&client->handle, (uv_close_cb)free);
 }
 
 static enum rfbNewClientAction rfb_new_client_hook(rfbClientPtr cl)
@@ -377,6 +380,7 @@ static enum rfbNewClientAction rfb_new_client_hook(rfbClientPtr cl)
 		      UV_DISCONNECT, handle_client_event);
 
 	cl->clientData = self;
+	cl->clientGoneHook = rfb_client_gone_hook;
 
 	return RFB_CLIENT_ACCEPT;
 }
