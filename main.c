@@ -637,7 +637,7 @@ static void init_virtual_keyboard(struct wvnc *wvnc)
 		wvnc->wl.wl_keyboard = wl_seat_get_keyboard(wvnc->selected_seat->wl);
 		wl_keyboard_add_listener(wvnc->wl.wl_keyboard, &wl_keyboard_listener,
 								 wvnc);
-		wl_display_dispatch(wvnc->wl.display);
+		wl_display_dispatch_pending(wvnc->wl.display);
 		wl_display_roundtrip(wvnc->wl.display);
 	}
 	if (xkb->map == NULL) {
