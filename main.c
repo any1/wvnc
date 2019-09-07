@@ -80,7 +80,7 @@ struct wvnc {
 	uint32_t logical_width;
 	uint32_t logical_height;
 
-	uv_loop_t main_loop;
+	uv_loop_t *main_loop;
 	uv_poll_t wayland_poller;
 	uv_poll_t rfb_poller;
 	uv_prepare_t flusher;
@@ -375,7 +375,7 @@ static enum rfbNewClientAction rfb_new_client_hook(rfbClientPtr cl)
 	self->wvnc = global_wvnc;
 	wl_list_insert(&self->wvnc->clients, &self->link);
 
-	uv_poll_init(&self->wvnc->main_loop, &self->handle, cl->sock);
+	uv_poll_init(self->wvnc->main_loop, &self->handle, cl->sock);
 	uv_poll_start(&self->handle, UV_READABLE | UV_PRIORITIZED |
 		      UV_DISCONNECT, handle_client_event);
 
@@ -863,7 +863,7 @@ void after_update_fb(uv_work_t *req, int status)
 
 void schedule_framebuffer_update(struct wvnc *wvnc)
 {
-	uv_queue_work(&wvnc->main_loop, &wvnc->fb_worker, do_update_fb,
+	uv_queue_work(wvnc->main_loop, &wvnc->fb_worker, do_update_fb,
 		      after_update_fb);
 }
 
@@ -1004,34 +1004,34 @@ int main(int argc, char *argv[])
 	// Initialize RFB
 	init_rfb(wvnc);
 
-	uv_loop_init(&wvnc->main_loop);
+	wvnc->main_loop = uv_default_loop();
 
-	uv_timer_init(&wvnc->main_loop, &wvnc->capture_timer);
+	uv_timer_init(wvnc->main_loop, &wvnc->capture_timer);
 	uv_timer_start(&wvnc->capture_timer, handle_capture_timeout,
 		       wvnc->args.period, wvnc->args.period);
 
-	uv_poll_init(&wvnc->main_loop, &wvnc->wayland_poller,
+	uv_poll_init(wvnc->main_loop, &wvnc->wayland_poller,
 			wl_display_get_fd(wvnc->wl.display));
 	uv_poll_start(&wvnc->wayland_poller, UV_READABLE | UV_PRIORITIZED,
 			handle_wayland_event);
 
 	int listen_fd = wvnc->rfb.screen_info->listenSock;
 	assert(listen_fd >= 0);
-	uv_poll_init(&wvnc->main_loop, &wvnc->rfb_poller, listen_fd);
+	uv_poll_init(wvnc->main_loop, &wvnc->rfb_poller, listen_fd);
 	uv_poll_start(&wvnc->rfb_poller, UV_READABLE | UV_PRIORITIZED,
 			handle_rfb_event);
 
-	uv_prepare_init(&wvnc->main_loop, &wvnc->flusher);
+	uv_prepare_init(wvnc->main_loop, &wvnc->flusher);
 	uv_prepare_start(&wvnc->flusher, prepare_for_poll);
 
-	uv_signal_init(&wvnc->main_loop, &wvnc->signal_handler);
+	uv_signal_init(wvnc->main_loop, &wvnc->signal_handler);
 	uv_signal_start(&wvnc->signal_handler, handle_signal, SIGINT);
 
-	int rc = uv_run(&wvnc->main_loop, UV_RUN_DEFAULT);
+	int rc = uv_run(wvnc->main_loop, UV_RUN_DEFAULT);
 
 	clean_up_clients(wvnc);
 
-	uv_loop_close(&wvnc->main_loop);
+	uv_loop_close(wvnc->main_loop);
 
 	xkb_context_unref(wvnc->xkb.ctx);
 	xkb_keymap_unref(wvnc->xkb.map);
