@@ -409,6 +409,17 @@ static void rfb_ptr_hook(struct nvnc_client *cl, uint16_t screen_x,
 	}
 }
 
+static void rfb_fb_req_hook(struct nvnc_client *cl, bool immediate,
+							uint16_t x, uint16_t y,
+							uint16_t width, uint16_t height)
+
+{
+	struct wvnc_client *client = nvnc_get_userdata(cl);
+	struct wvnc *wvnc = client->wvnc;
+
+	if (immediate)
+		wvnc->is_first_capture_done = 0;
+}
 
 struct key_iter_search {
 	xkb_keysym_t keysym;
@@ -778,6 +789,7 @@ static void init_rfb(struct wvnc *wvnc)
 	nvnc_set_new_client_fn(nvnc, rfb_new_client_hook);
 	nvnc_set_key_fn(nvnc, rfb_key_hook);
 	nvnc_set_pointer_fn(nvnc, rfb_ptr_hook);
+	nvnc_set_fb_req_fn(nvnc, rfb_fb_req_hook);
 }
 
 
