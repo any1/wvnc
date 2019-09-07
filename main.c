@@ -14,8 +14,11 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include <pixman.h>
+#include <neatvnc.h>
+#include <libdrm/drm_fourcc.h>
+#include <errno.h>
+#include <string.h>
 
-#include <rfb/rfb.h>
 #include <uv.h>
 
 #include "wlr-virtual-keyboard-unstable-v1-client-protocol.h"
@@ -30,7 +33,7 @@
 
 struct wvnc_args {
 	const char *output;
-	in_addr_t address;
+	const char *address;
 	int port;
 	int period;
 	bool no_uinput;
@@ -51,8 +54,8 @@ enum wvnc_capture_state {
 struct wvnc_client;
 
 struct wvnc {
+	struct nvnc *nvnc;
 	struct {
-		rfbScreenInfo *screen_info;
 		rgba_t *fb;
 	} rfb;
 	struct {
@@ -82,7 +85,6 @@ struct wvnc {
 
 	uv_loop_t *main_loop;
 	uv_poll_t wayland_poller;
-	uv_poll_t rfb_poller;
 	uv_prepare_t flusher;
 	uv_work_t fb_worker;
 	uv_signal_t signal_handler;
@@ -97,7 +99,7 @@ struct wvnc_client {
 	uv_poll_t handle; /* Must be first element */
 	struct wl_list link;
 	struct wvnc* wvnc;
-	rfbClientPtr rfb_client;
+	struct nvnc_client *nvnc_client;
 };
 
 // This is because we can't pass our global pointer into some of the 
@@ -312,6 +314,7 @@ static void handle_wl_registry_global(void *data, struct wl_registry *registry,
 	if (IS_PROTOCOL(wl_output)) {
 		struct wvnc_output *out = xmalloc(sizeof(struct wvnc_output));
 		out->wl = BIND(wl_output, 1);
+		out->fourcc = DRM_FORMAT_ARGB8888; // TODO: Get this from the source.
 		wl_output_add_listener(out->wl, &output_listener, out);
 		wl_list_insert(&wvnc->outputs, &out->link);
 	} else if (IS_PROTOCOL(zxdg_output_manager_v1)) {
@@ -349,46 +352,33 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = handle_wl_registry_global_remove,
 };
 
-void handle_client_event(uv_poll_t *handle, int status, int event)
+static void rfb_client_gone_hook(struct nvnc_client *client)
 {
-	struct wvnc_client* client = wl_container_of(handle, client, handle);
-	rfbProcessEvents(client->wvnc->rfb.screen_info, 0);
+	struct wvnc_client *self = nvnc_get_userdata(client);
+	assert(self);
+
+	wl_list_remove(&self->link);
 }
 
-static void rfb_client_gone_hook(rfbClientPtr cl)
-{
-	struct wvnc_client *client = cl->clientData;
-	assert(client);
-
-	uv_poll_stop(&client->handle);
-	wl_list_remove(&client->link);
-	uv_close((uv_handle_t*)&client->handle, (uv_close_cb)free);
-}
-
-static enum rfbNewClientAction rfb_new_client_hook(rfbClientPtr cl)
+static void rfb_new_client_hook(struct nvnc_client *client)
 {
 	struct wvnc_client *self = calloc(1, sizeof(*self));
 	if (!self)
-		return RFB_CLIENT_REFUSE;
+		return;
 
-	self->rfb_client = cl;
-	self->wvnc = global_wvnc;
+	self->nvnc_client = client;
+	self->wvnc = nvnc_get_userdata(nvnc_get_server(client));
+
 	wl_list_insert(&self->wvnc->clients, &self->link);
 
-	uv_poll_init(self->wvnc->main_loop, &self->handle, cl->sock);
-	uv_poll_start(&self->handle, UV_READABLE | UV_PRIORITIZED |
-		      UV_DISCONNECT, handle_client_event);
-
-	cl->clientData = self;
-	cl->clientGoneHook = rfb_client_gone_hook;
-
-	return RFB_CLIENT_ACCEPT;
+	nvnc_set_userdata(client, self);
+	nvnc_set_client_cleanup_fn(client, rfb_client_gone_hook);
 }
 
-
-static void rfb_ptr_hook(int mask, int screen_x, int screen_y, rfbClientPtr cl)
+static void rfb_ptr_hook(struct nvnc_client *cl, uint16_t screen_x,
+						 uint16_t screen_y, enum nvnc_button_mask mask)
 {
-	struct wvnc_client *client = cl->clientData;
+	struct wvnc_client *client = nvnc_get_userdata(cl);
 	struct wvnc *wvnc = client->wvnc;
 
 	if (!wvnc->uinput.initialized) {
@@ -406,13 +396,15 @@ static void rfb_ptr_hook(int mask, int screen_x, int screen_y, rfbClientPtr cl)
 
 	uinput_set_buttons(
 		&wvnc->uinput,
-		!!(mask & BIT(0)), !!(mask & BIT(1)), !!(mask & BIT(2))
+		!!(mask & NVNC_BUTTON_LEFT),
+		!!(mask & NVNC_BUTTON_MIDDLE),
+		!!(mask & NVNC_BUTTON_RIGHT)
 	);
 
-	if (mask & BIT(4)) {
+	if (mask & NVNC_SCROLL_DOWN) {
 		uinput_wheel(&wvnc->uinput, false);
 	}
-	if (mask & BIT(3)) {
+	if (mask & NVNC_SCROLL_UP) {
 		uinput_wheel(&wvnc->uinput, true);
 	}
 }
@@ -448,9 +440,9 @@ end:
 	return;
 }
 
-static void rfb_key_hook(rfbBool down, rfbKeySym keysym, rfbClientPtr cl)
+static void rfb_key_hook(struct nvnc_client *cl, uint32_t keysym, bool down)
 {
-	struct wvnc_client *client = cl->clientData;
+	struct wvnc_client *client = nvnc_get_userdata(cl);
 	struct wvnc *wvnc = client->wvnc;
 
 	struct wvnc_xkb *xkb = &wvnc->xkb;
@@ -505,12 +497,18 @@ static void rfb_key_hook(rfbBool down, rfbKeySym keysym, rfbClientPtr cl)
 
 static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 {
-	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new,
-				 0, 0, new->width, new->height);
-	rfbMarkRectAsModified(
-		wvnc->rfb.screen_info,
-		0, 0, wvnc->selected_output->width, wvnc->selected_output->height
-	);
+	struct pixman_region16 region;
+	pixman_region_init_rect(&region, 0, 0, new->width, new->height);
+	struct nvnc_fb fb = {
+		.width = new->width,
+		.height = new->height,
+		.addr = new->data,
+		.fourcc_format = new->format,
+		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
+		.size = new->size,
+	};
+	nvnc_update_fb(wvnc->nvnc, &fb, &region);
+	pixman_region_fini(&region);
 }
 
 static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
@@ -532,10 +530,19 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 	int box_width = box->x2 - box->x1;
 	int box_height = box->y2 - box->y1;
 
-	buffer_to_fb(wvnc->rfb.fb, wvnc->selected_output, new, box->x1, box->y1,
-			box_width, box_height);
-	rfbMarkRectAsModified(wvnc->rfb.screen_info, box->x1, new->height - box->y2, box->x2,
-			new->height - box->y1);
+	/* TODO: Don't use only the extents */
+	struct pixman_region16 nregion;
+	pixman_region_init_rect(&nregion, box->x1, box->y1, box_width, box_height);
+	struct nvnc_fb fb = {
+		.width = new->width,
+		.height = new->height,
+		.addr = new->data,
+		.fourcc_format = new->format,
+		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
+		.size = new->size,
+	};
+	nvnc_update_fb(wvnc->nvnc, &fb, &nregion);
+	pixman_region_fini(&nregion);
 
 done:
 	pixman_region32_fini(&region);
@@ -754,35 +761,23 @@ static void init_wayland(struct wvnc *wvnc)
 
 static void init_rfb(struct wvnc *wvnc)
 {
-	log_info("Initializing RFB");
-	// 4 bytes per pixel only at the moment. Probably not worth using anything
-	// else.
-	wvnc->rfb.screen_info = rfbGetScreen(
-		NULL, NULL,
-		wvnc->selected_output->width, wvnc->selected_output->height,
-		8, 3, 4
-	);
-	wvnc->rfb.screen_info->desktopName = "wvnc";
-	wvnc->rfb.screen_info->alwaysShared = true;
-	wvnc->rfb.screen_info->port = wvnc->args.port;
-	wvnc->rfb.screen_info->listenInterface = wvnc->args.address;
-	// TODO: Maybe enable IPv6 someday
-	wvnc->rfb.screen_info->ipv6port = 0;
-	wvnc->rfb.screen_info->listen6Interface = NULL;
-	wvnc->rfb.screen_info->screenData = wvnc;
-	wvnc->rfb.screen_info->newClientHook = rfb_new_client_hook;
-	wvnc->rfb.screen_info->kbdAddEvent = rfb_key_hook;
-	wvnc->rfb.screen_info->ptrAddEvent = rfb_ptr_hook;
+	log_info("Initializing VNC");
 
-	rfbLog = log_info;
-	rfbErr = log_error;
+	struct nvnc *nvnc = nvnc_open(wvnc->args.address, wvnc->args.port);
+	if (!nvnc)
+		fail("Could not create VNC server");
 
-	size_t fb_size = wvnc->selected_output->width * wvnc->selected_output->height * sizeof(rgba_t);
-	wvnc->rfb.fb = xmalloc(fb_size);
-	wvnc->rfb.screen_info->frameBuffer = (char *)wvnc->rfb.fb;
+	wvnc->nvnc = nvnc;
+	nvnc_set_userdata(nvnc, wvnc);
 
-	log_info("Starting the VNC server");
-	rfbInitServer(wvnc->rfb.screen_info);
+	nvnc_set_name(nvnc, "wvnc");
+	nvnc_set_dimensions(nvnc, wvnc->selected_output->width,
+					    wvnc->selected_output->height,
+						wvnc->selected_output->fourcc);
+
+	nvnc_set_new_client_fn(nvnc, rfb_new_client_hook);
+	nvnc_set_key_fn(nvnc, rfb_key_hook);
+	nvnc_set_pointer_fn(nvnc, rfb_ptr_hook);
 }
 
 
@@ -808,10 +803,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		args->output = arg;
 		break;
 	case 'b':
-		args->address = inet_addr(arg);
-		if (args->address == INADDR_NONE) {
-			argp_failure(state, EXIT_FAILURE, 0, "Invalid bind address");
-		}
+		args->address = arg;
 		break;
 	case 'p':
 		args->port = atoi(arg);
@@ -858,7 +850,6 @@ void after_update_fb(uv_work_t *req, int status)
 {
 	struct wvnc* wvnc = wl_container_of(req, wvnc, fb_worker);
 	wvnc->capture_state = WVNC_STATE_IDLE;
-	rfbProcessEvents(wvnc->rfb.screen_info, 0);
 }
 
 void schedule_framebuffer_update(struct wvnc *wvnc)
@@ -909,12 +900,6 @@ void handle_wayland_event(uv_poll_t *handle, int status, int event)
 {
 	struct wvnc* wvnc = wl_container_of(handle, wvnc, wayland_poller);
 	wl_display_dispatch(wvnc->wl.display);
-}
-
-void handle_rfb_event(uv_poll_t *handle, int status, int event)
-{
-	struct wvnc* wvnc = wl_container_of(handle, wvnc, rfb_poller);
-	rfbProcessEvents(wvnc->rfb.screen_info, 0);
 }
 
 void clean_up_clients(struct wvnc *wvnc)
@@ -978,7 +963,7 @@ int main(int argc, char *argv[])
 	struct wvnc *wvnc = xmalloc(sizeof(struct wvnc));
 	global_wvnc = wvnc;
 	wvnc->args.port = 5100;
-	wvnc->args.address = inet_addr("127.0.0.1");
+	wvnc->args.address = "127.0.0.1";
 	wvnc->args.period = 30;  // 30 FPS-ish
 
 	struct argp argp = { argp_options, parse_opt, NULL, NULL, NULL, NULL, NULL };
@@ -1015,12 +1000,6 @@ int main(int argc, char *argv[])
 	uv_poll_start(&wvnc->wayland_poller, UV_READABLE | UV_PRIORITIZED,
 			handle_wayland_event);
 
-	int listen_fd = wvnc->rfb.screen_info->listenSock;
-	assert(listen_fd >= 0);
-	uv_poll_init(wvnc->main_loop, &wvnc->rfb_poller, listen_fd);
-	uv_poll_start(&wvnc->rfb_poller, UV_READABLE | UV_PRIORITIZED,
-			handle_rfb_event);
-
 	uv_prepare_init(wvnc->main_loop, &wvnc->flusher);
 	uv_prepare_start(&wvnc->flusher, prepare_for_poll);
 
@@ -1049,8 +1028,7 @@ int main(int argc, char *argv[])
 	zwp_virtual_keyboard_v1_destroy(wvnc->wl.keyboard);
 	wl_registry_destroy(wvnc->wl.registry);
 	wl_display_disconnect(wvnc->wl.display);
-	free(wvnc->rfb.fb);
-	rfbScreenCleanup(wvnc->rfb.screen_info);
+	nvnc_close(wvnc->nvnc);
 	free(wvnc);
 
 	return rc;

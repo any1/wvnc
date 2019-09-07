@@ -49,6 +49,8 @@ struct wvnc_output {
 	uint32_t height;
 	enum wl_output_transform transform;
 
+	uint32_t fourcc;
+
 	char *name;
 };
 

@@ -7,7 +7,7 @@ wayland_scanner = find_program('wayland-scanner')
 wayland_client = dependency('wayland-client')
 wayland_protos = dependency('wayland-protocols')
 pixman = dependency('pixman-1')
-libvncserver = dependency('libvncserver')
+neatvnc = dependency('neatvnc')
 libuv = dependency('libuv')
 xkbcommon = dependency('xkbcommon')
 
@@ -54,5 +54,5 @@ client_protos = declare_dependency(
 executable('wvnc',
 	[ 'main.c', 'buffer.c', 'utils.c', 'uinput.c', 'damage.c', ],
 	dependencies : [ libm, wayland_client, client_protos, pixman,
-		libvncserver, libuv, xkbcommon ],
+		neatvnc, libuv, xkbcommon ],
 	install: true)
