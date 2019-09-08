@@ -409,7 +409,7 @@ static void rfb_ptr_hook(struct nvnc_client *cl, uint16_t screen_x,
 	}
 }
 
-static void rfb_fb_req_hook(struct nvnc_client *cl, bool immediate,
+static void rfb_fb_req_hook(struct nvnc_client *cl, bool is_incremental,
 							uint16_t x, uint16_t y,
 							uint16_t width, uint16_t height)
 
@@ -417,7 +417,7 @@ static void rfb_fb_req_hook(struct nvnc_client *cl, bool immediate,
 	struct wvnc_client *client = nvnc_get_userdata(cl);
 	struct wvnc *wvnc = client->wvnc;
 
-	if (immediate)
+	if (!is_incremental)
 		wvnc->is_first_capture_done = 0;
 }
 
@@ -524,7 +524,7 @@ static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 		.addr = new->data,
 		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-		.nvnc_modifier = NVNC_MOD_Y_INVERT,
+//		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
 	};
 	nvnc_update_fb(wvnc->nvnc, &fb, &region);
@@ -559,7 +559,7 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 		.addr = new->data,
 		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-		.nvnc_modifier = NVNC_MOD_Y_INVERT,
+//		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
 	};
 	nvnc_update_fb(wvnc->nvnc, &fb, &nregion);
