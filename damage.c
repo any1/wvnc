@@ -85,19 +85,21 @@ struct bitmap *damage_compute(const uint32_t * __restrict__ src0,
 	return damage;
 }
 
-void damage_to_pixman(struct pixman_region32* dst, const struct bitmap* src,
+void damage_to_pixman(struct pixman_region16* dst, const struct bitmap* src,
 					  int width, int height)
 {
 	int x_tiles = UDIV_UP(width, TILE_SIZE);
 	int y_tiles = UDIV_UP(height, TILE_SIZE);
 
-	for (int i = 0; i < x_tiles * y_tiles; ++i)
-		if (bitmap_is_set(src, i)) {
-			int x = (i % x_tiles) * TILE_SIZE;
-			int y = (i / x_tiles) * TILE_SIZE;
+	for (int yt = 0; yt < y_tiles; ++yt)
+		for (int xt = 0; xt < x_tiles; ++xt)
+			if (bitmap_is_set(src, yt * x_tiles + xt)) {
+				int x = xt * TILE_SIZE;
+				int y = (y_tiles - yt - 1) * TILE_SIZE;
 
-			pixman_region32_union_rect(dst, dst, x, y, TILE_SIZE, TILE_SIZE);
-		}
+				pixman_region_union_rect(dst, dst, x, y,
+							 TILE_SIZE, TILE_SIZE);
+			}
 
-	pixman_region32_intersect_rect(dst, dst, 0, 0, width, height);
+	pixman_region_intersect_rect(dst, dst, 0, 0, width, height);
 }

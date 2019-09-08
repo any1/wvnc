@@ -524,7 +524,7 @@ static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 		.addr = new->data,
 		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-//		.nvnc_modifier = NVNC_MOD_Y_INVERT,
+		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
 	};
 	nvnc_update_fb(wvnc->nvnc, &fb, &region);
@@ -537,8 +537,8 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 	assert(new->width == old->width && new->height == old->height &&
 		   new->stride == old->stride);
 
-	struct pixman_region32 region;
-	pixman_region32_init(&region);
+	struct pixman_region16 region;
+	pixman_region_init(&region);
 
 	struct bitmap* damage = damage_compute(old->data, new->data, new->width, new->height);
 	if (!damage || bitmap_is_empty(damage))
@@ -546,27 +546,19 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 
 	damage_to_pixman(&region, damage, new->width, new->height);
 
-	struct pixman_box32 *box = pixman_region32_extents(&region);
-	int box_width = box->x2 - box->x1;
-	int box_height = box->y2 - box->y1;
-
-	/* TODO: Don't use only the extents */
-	struct pixman_region16 nregion;
-	pixman_region_init_rect(&nregion, box->x1, box->y1, box_width, box_height);
 	struct nvnc_fb fb = {
 		.width = new->width,
 		.height = new->height,
 		.addr = new->data,
 		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-//		.nvnc_modifier = NVNC_MOD_Y_INVERT,
+		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
 	};
-	nvnc_update_fb(wvnc->nvnc, &fb, &nregion);
-	pixman_region_fini(&nregion);
+	nvnc_update_fb(wvnc->nvnc, &fb, &region);
 
 done:
-	pixman_region32_fini(&region);
+	pixman_region_fini(&region);
 	free(damage);
 }
 

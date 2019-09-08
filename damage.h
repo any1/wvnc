@@ -30,5 +30,5 @@
 struct bitmap *damage_compute(const uint32_t *src0, const uint32_t *src1,
 			      int width, int height);
 
-void damage_to_pixman(struct pixman_region32* dst, const struct bitmap* src,
+void damage_to_pixman(struct pixman_region16* dst, const struct bitmap* src,
 		      int width, int height);
