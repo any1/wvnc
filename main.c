@@ -314,7 +314,7 @@ static void handle_wl_registry_global(void *data, struct wl_registry *registry,
 	if (IS_PROTOCOL(wl_output)) {
 		struct wvnc_output *out = xmalloc(sizeof(struct wvnc_output));
 		out->wl = BIND(wl_output, 1);
-		out->fourcc = DRM_FORMAT_RGBA8888; // TODO: Get this from the source.
+		out->fourcc = DRM_FORMAT_ARGB8888; // TODO: Get this from the source.
 		wl_output_add_listener(out->wl, &output_listener, out);
 		wl_list_insert(&wvnc->outputs, &out->link);
 	} else if (IS_PROTOCOL(zxdg_output_manager_v1)) {
@@ -505,6 +505,14 @@ static void rfb_key_hook(struct nvnc_client *cl, uint32_t keysym, bool down)
 	}
 }
 
+static uint32_t fourcc_from_wl_shm(enum wl_shm_format in)
+{
+	switch (in) {
+	case WL_SHM_FORMAT_ARGB8888: return DRM_FORMAT_ARGB8888;
+	case WL_SHM_FORMAT_XRGB8888: return DRM_FORMAT_XRGB8888;
+	default: return in;
+	}
+}
 
 static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 {
@@ -514,7 +522,7 @@ static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 		.width = new->width,
 		.height = new->height,
 		.addr = new->data,
-		.fourcc_format = new->format,
+		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
 		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
@@ -549,7 +557,7 @@ static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
 		.width = new->width,
 		.height = new->height,
 		.addr = new->data,
-		.fourcc_format = new->format,
+		.fourcc_format = fourcc_from_wl_shm(new->format),
 		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
 		.nvnc_modifier = NVNC_MOD_Y_INVERT,
 		.size = new->size,
