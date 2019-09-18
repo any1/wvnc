@@ -88,8 +88,6 @@ struct wvnc {
 	uv_signal_t signal_handler;
 
 	struct wl_list clients;
-	uv_timer_t capture_timer;
-	enum wvnc_capture_state capture_state;
 	int is_first_capture_done;
 };
 
@@ -99,6 +97,9 @@ struct wvnc_client {
 	struct wvnc* wvnc;
 	struct nvnc_client *nvnc_client;
 };
+
+void capture_frame(struct wvnc *wvnc);
+void swap_buffers(struct wvnc *wvnc);
 
 // This is because we can't pass our global pointer into some of the 
 // rfb callbacks. Use minimally.
@@ -224,6 +225,11 @@ static void handle_frame_ready(void *data,
 	buffer->done = true;
 	//printf("buffer %p ready\n", buffer);
 	zwlr_screencopy_frame_v1_destroy(frame);
+
+	swap_buffers(buffer->wvnc);
+
+	if (!wl_list_empty(&buffer->wvnc->clients))
+		capture_frame(buffer->wvnc);
 }
 
 static void handle_frame_failed(void *data,
@@ -380,10 +386,15 @@ static void rfb_new_client_hook(struct nvnc_client *client)
 	self->nvnc_client = client;
 	self->wvnc = nvnc_get_userdata(nvnc_get_server(client));
 
+	bool is_first_client = wl_list_empty(&self->wvnc->clients);
+
 	wl_list_insert(&self->wvnc->clients, &self->link);
 
 	nvnc_set_userdata(client, self);
 	nvnc_set_client_cleanup_fn(client, rfb_client_gone_hook);
+
+	if (is_first_client)
+		capture_frame(self->wvnc);
 }
 
 static void rfb_ptr_hook(struct nvnc_client *cl, uint16_t screen_x,
@@ -520,7 +531,6 @@ void after_update_fb(struct nvnc* nvnc)
 {
 	//printf("After update!\n");
 	struct wvnc *wvnc = nvnc_get_userdata(nvnc);
-	wvnc->capture_state = WVNC_STATE_IDLE;
 	wvnc->is_first_capture_done = 1;
 }
 
@@ -840,50 +850,30 @@ int update_framebuffer(struct wvnc *wvnc, struct wvnc_buffer *buffer,
 	return update_framebuffer_full(wvnc, buffer);
 }
 
-void handle_capture_timeout(uv_timer_t *timer)
+void capture_frame(struct wvnc *wvnc)
 {
-	struct wvnc* wvnc = wl_container_of(timer, wvnc, capture_timer);
-
 	struct zwlr_screencopy_frame_v1 *frame;
 	struct wvnc_buffer *buffer;
 
-	if (wl_list_empty(&wvnc->clients))
-		return;
+	buffer = &wvnc->buffers[wvnc->buffer_i];
+	buffer->done = false;
 
-	switch (wvnc->capture_state) {
-	case WVNC_STATE_IDLE:
-		//printf("idle\n");
-		buffer = &wvnc->buffers[wvnc->buffer_i];
-		buffer->done = false;
+	frame = zwlr_screencopy_manager_v1_capture_output(
+			wvnc->wl.screencopy_manager, 0,
+			wvnc->selected_output->wl);
 
-		frame = zwlr_screencopy_manager_v1_capture_output(
-				wvnc->wl.screencopy_manager, 0,
-				wvnc->selected_output->wl);
+	zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener,
+			buffer);
+}
 
-		zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener,
-				buffer);
+void swap_buffers(struct wvnc *wvnc)
+{
+	struct wvnc_buffer *buffer;
 
-		wvnc->capture_state = WVNC_STATE_CAPTURING;
-		break;
-	case WVNC_STATE_CAPTURING:
-		buffer = &wvnc->buffers[wvnc->buffer_i];
-		//printf("capturing %p\n", buffer);
-		if (buffer->done) {
-			//printf("wtf\n");
-			struct wvnc_buffer* old = &wvnc->buffers[!wvnc->buffer_i];
-			if (update_framebuffer(wvnc, buffer, old) == 0) {
-				wvnc->buffer_i ^= 1;
-				wvnc->capture_state = WVNC_STATE_UPDATING;
-			} else {
-				wvnc->capture_state = WVNC_STATE_IDLE;
-			}
-		}
-		break;
-	case WVNC_STATE_UPDATING:
-		//printf("updating\n");
-		/* Do nothing */
-		break;
-	}
+	buffer = &wvnc->buffers[wvnc->buffer_i];
+	struct wvnc_buffer* old = &wvnc->buffers[!wvnc->buffer_i];
+
+	update_framebuffer(wvnc, buffer, old);
 }
 
 void handle_wayland_event(uv_poll_t *handle, int status, int event)
@@ -980,10 +970,6 @@ int main(int argc, char *argv[])
 	init_rfb(wvnc);
 
 	wvnc->main_loop = uv_default_loop();
-
-	uv_timer_init(wvnc->main_loop, &wvnc->capture_timer);
-	uv_timer_start(&wvnc->capture_timer, handle_capture_timeout,
-		       wvnc->args.period, wvnc->args.period);
 
 	uv_poll_init(wvnc->main_loop, &wvnc->wayland_poller,
 			wl_display_get_fd(wvnc->wl.display));
