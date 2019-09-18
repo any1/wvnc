@@ -26,7 +26,6 @@
 #include "xdg-output-unstable-v1-client-protocol.h"
 
 #include "wvnc.h"
-#include "buffer.h"
 #include "uinput.h"
 #include "utils.h"
 #include "damage.h"
@@ -86,7 +85,6 @@ struct wvnc {
 	uv_loop_t *main_loop;
 	uv_poll_t wayland_poller;
 	uv_prepare_t flusher;
-	uv_work_t fb_worker;
 	uv_signal_t signal_handler;
 
 	struct wl_list clients;
@@ -106,6 +104,14 @@ struct wvnc_client {
 // rfb callbacks. Use minimally.
 thread_local struct wvnc *global_wvnc;
 
+static uint32_t fourcc_from_wl_shm(enum wl_shm_format in)
+{
+	switch (in) {
+	case WL_SHM_FORMAT_ARGB8888: return DRM_FORMAT_ARGB8888;
+	case WL_SHM_FORMAT_XRGB8888: return DRM_FORMAT_XRGB8888;
+	default: return in;
+	}
+}
 
 static void initialize_shm_buffer(struct wvnc_buffer *buffer,
 								  enum wl_shm_format format,
@@ -132,11 +138,13 @@ static void initialize_shm_buffer(struct wvnc_buffer *buffer,
 	wl_shm_pool_destroy(pool);
 
 	buffer->wl = wl_buffer;
-	buffer->data = data;
-	buffer->width = width;
-	buffer->height = height;
-	buffer->size = size;
-	buffer->format = format;
+	buffer->fb.addr = data;
+	buffer->fb.width = width;
+	buffer->fb.height = height;
+	buffer->fb.size = size;
+	buffer->fb.fourcc_format = fourcc_from_wl_shm(format);
+	buffer->fb.fourcc_modifier = DRM_FORMAT_MOD_LINEAR;
+	buffer->fb.nvnc_modifier = 0;
 	buffer->stride = stride;
 }
 
@@ -200,7 +208,9 @@ static void handle_frame_flags(void *data,
 	// TODO: Handle Y-inversion here? (the only flag currently defined)
 	struct wvnc_buffer *buffer = data;
 	if (flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) {
-		buffer->y_invert = true;
+		buffer->fb.nvnc_modifier |= NVNC_MOD_Y_INVERT;
+	} else {
+		buffer->fb.nvnc_modifier &= ~NVNC_MOD_Y_INVERT;
 	}
 }
 
@@ -212,6 +222,7 @@ static void handle_frame_ready(void *data,
 {
 	struct wvnc_buffer *buffer = data;
 	buffer->done = true;
+	//printf("buffer %p ready\n", buffer);
 	zwlr_screencopy_frame_v1_destroy(frame);
 }
 
@@ -505,61 +516,41 @@ static void rfb_key_hook(struct nvnc_client *cl, uint32_t keysym, bool down)
 	}
 }
 
-static uint32_t fourcc_from_wl_shm(enum wl_shm_format in)
+void after_update_fb(struct nvnc* nvnc)
 {
-	switch (in) {
-	case WL_SHM_FORMAT_ARGB8888: return DRM_FORMAT_ARGB8888;
-	case WL_SHM_FORMAT_XRGB8888: return DRM_FORMAT_XRGB8888;
-	default: return in;
-	}
+	//printf("After update!\n");
+	struct wvnc *wvnc = nvnc_get_userdata(nvnc);
+	wvnc->capture_state = WVNC_STATE_IDLE;
+	wvnc->is_first_capture_done = 1;
 }
 
-static void update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
+static int update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 {
 	struct pixman_region16 region;
-	pixman_region_init_rect(&region, 0, 0, new->width, new->height);
-	struct nvnc_fb fb = {
-		.width = new->width,
-		.height = new->height,
-		.addr = new->data,
-		.fourcc_format = fourcc_from_wl_shm(new->format),
-		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-		.nvnc_modifier = NVNC_MOD_Y_INVERT,
-		.size = new->size,
-	};
-	nvnc_update_fb(wvnc->nvnc, &fb, &region);
+	pixman_region_init_rect(&region, 0, 0, new->fb.width, new->fb.height);
+	int rc = nvnc_update_fb(wvnc->nvnc, &new->fb, &region, after_update_fb);
 	pixman_region_fini(&region);
+	return rc;
 }
 
-static void update_framebuffer_with_damage_check(struct wvnc *wvnc,
+static int update_framebuffer_with_damage_check(struct wvnc *wvnc,
 							   struct wvnc_buffer *old, struct wvnc_buffer *new)
 {
-	assert(new->width == old->width && new->height == old->height &&
-		   new->stride == old->stride);
-
 	struct pixman_region16 region;
 	pixman_region_init(&region);
 
-	struct bitmap* damage = damage_compute(old->data, new->data, new->width, new->height);
-	if (!damage || bitmap_is_empty(damage))
-		goto done;
+	int width = new->fb.width;
+	int height = new->fb.height;
 
-	damage_to_pixman(&region, damage, new->width, new->height);
+	struct bitmap* damage = damage_compute(old->fb.addr, new->fb.addr,
+										   width, height);
+	damage_to_pixman(&region, damage, width, height);
 
-	struct nvnc_fb fb = {
-		.width = new->width,
-		.height = new->height,
-		.addr = new->data,
-		.fourcc_format = fourcc_from_wl_shm(new->format),
-		.fourcc_modifier = DRM_FORMAT_MOD_LINEAR,
-		.nvnc_modifier = NVNC_MOD_Y_INVERT,
-		.size = new->size,
-	};
-	nvnc_update_fb(wvnc->nvnc, &fb, &region);
+	int rc = nvnc_update_fb(wvnc->nvnc, &new->fb, &region, after_update_fb);
 
-done:
 	pixman_region_fini(&region);
 	free(damage);
+	return rc;
 }
 
 
@@ -840,36 +831,13 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-void update_framebuffer(struct wvnc *wvnc, struct wvnc_buffer *buffer,
-			struct wvnc_buffer *old)
+int update_framebuffer(struct wvnc *wvnc, struct wvnc_buffer *buffer,
+					   struct wvnc_buffer *old)
 {
-	if (!wvnc->is_first_capture_done) {
-		update_framebuffer_full(wvnc, buffer);
-		wvnc->is_first_capture_done = 1;
-	} else {
-		update_framebuffer_with_damage_check(wvnc, old, buffer);
-	}
-}
+//	if (wvnc->is_first_capture_done)
+//		return update_framebuffer_with_damage_check(wvnc, old, buffer);
 
-void do_update_fb(uv_work_t *req)
-{
-	struct wvnc* wvnc = wl_container_of(req, wvnc, fb_worker);
-	struct wvnc_buffer *buffer, *old;
-	buffer = &wvnc->buffers[wvnc->buffer_i];
-	old = &wvnc->buffers[!wvnc->buffer_i];
-	update_framebuffer(wvnc, buffer, old);
-}
-
-void after_update_fb(uv_work_t *req, int status)
-{
-	struct wvnc* wvnc = wl_container_of(req, wvnc, fb_worker);
-	wvnc->capture_state = WVNC_STATE_IDLE;
-}
-
-void schedule_framebuffer_update(struct wvnc *wvnc)
-{
-	uv_queue_work(wvnc->main_loop, &wvnc->fb_worker, do_update_fb,
-		      after_update_fb);
+	return update_framebuffer_full(wvnc, buffer);
 }
 
 void handle_capture_timeout(uv_timer_t *timer)
@@ -884,7 +852,7 @@ void handle_capture_timeout(uv_timer_t *timer)
 
 	switch (wvnc->capture_state) {
 	case WVNC_STATE_IDLE:
-		wvnc->buffer_i ^= 1;
+		//printf("idle\n");
 		buffer = &wvnc->buffers[wvnc->buffer_i];
 		buffer->done = false;
 
@@ -899,12 +867,20 @@ void handle_capture_timeout(uv_timer_t *timer)
 		break;
 	case WVNC_STATE_CAPTURING:
 		buffer = &wvnc->buffers[wvnc->buffer_i];
+		//printf("capturing %p\n", buffer);
 		if (buffer->done) {
-			schedule_framebuffer_update(wvnc);
-			wvnc->capture_state = WVNC_STATE_UPDATING;
+			//printf("wtf\n");
+			struct wvnc_buffer* old = &wvnc->buffers[!wvnc->buffer_i];
+			if (update_framebuffer(wvnc, buffer, old) == 0) {
+				wvnc->buffer_i ^= 1;
+				wvnc->capture_state = WVNC_STATE_UPDATING;
+			} else {
+				wvnc->capture_state = WVNC_STATE_IDLE;
+			}
 		}
 		break;
 	case WVNC_STATE_UPDATING:
+		//printf("updating\n");
 		/* Do nothing */
 		break;
 	}

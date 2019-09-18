@@ -26,13 +26,9 @@ struct wvnc_buffer {
 	struct wvnc *wvnc;
 
 	struct wl_buffer *wl;
-	void *data;
-	uint32_t width;
-	uint32_t height;
 	uint32_t stride;
-	size_t size;
-	enum wl_shm_format format;
-	bool y_invert;
+
+	struct nvnc_fb fb;
 
 	bool done;
 };

@@ -52,7 +52,7 @@ client_protos = declare_dependency(
 )
 
 executable('wvnc',
-	[ 'main.c', 'buffer.c', 'utils.c', 'uinput.c', 'damage.c', ],
+	[ 'main.c', 'utils.c', 'uinput.c', 'damage.c', ],
 	dependencies : [ libm, wayland_client, client_protos, pixman,
 		neatvnc, libuv, xkbcommon ],
 	install: true)
