@@ -28,7 +28,6 @@
 #include "wvnc.h"
 #include "uinput.h"
 #include "utils.h"
-#include "damage.h"
 
 struct wvnc_args {
 	const char *output;
@@ -543,26 +542,27 @@ static int update_framebuffer_full(struct wvnc *wvnc, struct wvnc_buffer *new)
 	return rc;
 }
 
+static void on_damage_check_done(struct pixman_region16 *damage, void *userdata)
+{
+	struct wvnc_buffer *buffer = userdata;
+	struct wvnc *wvnc = buffer->wvnc;
+
+	nvnc_update_fb(wvnc->nvnc, &buffer->fb, damage, after_update_fb);
+}
+
 static int update_framebuffer_with_damage_check(struct wvnc *wvnc,
 							   struct wvnc_buffer *old, struct wvnc_buffer *new)
 {
-	struct pixman_region16 region;
-	pixman_region_init(&region);
-
 	int width = new->fb.width;
 	int height = new->fb.height;
 
-	struct bitmap* damage = damage_compute(old->fb.addr, new->fb.addr,
-										   width, height);
-	damage_to_pixman(&region, damage, width, height);
 
-	int rc = nvnc_update_fb(wvnc->nvnc, &new->fb, &region, after_update_fb);
+	int rc = nvnc_check_damage(&old->fb, &new->fb, 0, 0, width, height,
+							 on_damage_check_done, new);
+	assert(rc == 0);
 
-	pixman_region_fini(&region);
-	free(damage);
-	return rc;
+	return 0;
 }
-
 
 static void calculate_logical_size(struct wvnc *wvnc)
 {
@@ -844,8 +844,8 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 int update_framebuffer(struct wvnc *wvnc, struct wvnc_buffer *buffer,
 					   struct wvnc_buffer *old)
 {
-//	if (wvnc->is_first_capture_done)
-//		return update_framebuffer_with_damage_check(wvnc, old, buffer);
+	if (wvnc->is_first_capture_done)
+		return update_framebuffer_with_damage_check(wvnc, old, buffer);
 
 	return update_framebuffer_full(wvnc, buffer);
 }
@@ -874,6 +874,8 @@ void swap_buffers(struct wvnc *wvnc)
 	struct wvnc_buffer* old = &wvnc->buffers[!wvnc->buffer_i];
 
 	update_framebuffer(wvnc, buffer, old);
+
+	wvnc->buffer_i ^= 1;
 }
 
 void handle_wayland_event(uv_poll_t *handle, int status, int event)
